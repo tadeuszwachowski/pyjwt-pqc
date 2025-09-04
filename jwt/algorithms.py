@@ -65,6 +65,28 @@ try:
         load_pem_public_key,
         load_ssh_public_key,
     )
+    # import falcon, dilithium and sphincs from pqcrypto
+    from oqs import Signature
+    from .pqc_signatures import (
+        Dilithium2PublicKey,
+        Dilithium2PrivateKey,
+        Dilithium2,
+        Dilithium3PublicKey,
+        Dilithium3PrivateKey,
+        Dilithium3,
+        Dilithium5PublicKey,
+        Dilithium5PrivateKey,
+        Dilithium5,
+        Falcon512,
+        Falcon512PublicKey,
+        Falcon512PrivateKey,
+        Falcon1024PublicKey,
+        Falcon1024PrivateKey,
+        Falcon1024,
+        SphincsSPrivateKey,
+        SphincsSPublicKey,
+        SphincsS,
+    )
 
     # pyjwt-964: we use these both for type checking below, as well as for validating the key passed in.
     # in Py >= 3.10, we can replace this with the Union types below
@@ -76,20 +98,46 @@ try:
         Ed448PrivateKey,
         Ed448PublicKey,
     )
+    ALLOWED_PQ_KEY_TYPES = (
+        Dilithium2PrivateKey, 
+        Dilithium2PublicKey, 
+        Dilithium3PrivateKey, 
+        Dilithium3PublicKey, 
+        Dilithium5PrivateKey, 
+        Dilithium5PublicKey, 
+        Falcon512PrivateKey, 
+        Falcon512PublicKey, 
+        Falcon1024PrivateKey, 
+        Falcon1024PublicKey, 
+        SphincsSPrivateKey,
+        SphincsSPublicKey,
+    )
     ALLOWED_KEY_TYPES = (
-        ALLOWED_RSA_KEY_TYPES + ALLOWED_EC_KEY_TYPES + ALLOWED_OKP_KEY_TYPES
+        ALLOWED_RSA_KEY_TYPES + ALLOWED_EC_KEY_TYPES + ALLOWED_OKP_KEY_TYPES + ALLOWED_PQ_KEY_TYPES
     )
     ALLOWED_PRIVATE_KEY_TYPES = (
         RSAPrivateKey,
         EllipticCurvePrivateKey,
         Ed25519PrivateKey,
         Ed448PrivateKey,
+        Dilithium2PrivateKey, 
+        Dilithium3PrivateKey, 
+        Dilithium5PrivateKey, 
+        Falcon512PrivateKey, 
+        Falcon1024PrivateKey, 
+        SphincsSPrivateKey,
     )
     ALLOWED_PUBLIC_KEY_TYPES = (
         RSAPublicKey,
         EllipticCurvePublicKey,
         Ed25519PublicKey,
         Ed448PublicKey,
+        Dilithium2PublicKey,
+        Dilithium3PublicKey, 
+        Dilithium5PublicKey, 
+        Falcon512PublicKey, 
+        Falcon1024PublicKey, 
+        SphincsSPublicKey,
     )
 
     if TYPE_CHECKING or bool(os.getenv("SPHINX_BUILD", "")):
@@ -106,17 +154,34 @@ try:
         AllowedOKPKeys: TypeAlias = (
             Ed25519PrivateKey | Ed25519PublicKey | Ed448PrivateKey | Ed448PublicKey
         )
-        AllowedKeys: TypeAlias = AllowedRSAKeys | AllowedECKeys | AllowedOKPKeys
+        AllowedPQKeys: TypeAlias = (
+            Dilithium2PrivateKey | Dilithium2PublicKey
+            | Dilithium3PrivateKey | Dilithium3PublicKey
+            | Dilithium5PrivateKey | Dilithium5PublicKey
+            | Falcon512PrivateKey | Falcon512PublicKey
+            | Falcon1024PrivateKey | Falcon1024PublicKey
+            | SphincsSPrivateKey | SphincsSPublicKey
+        )
+        AllowedKeys: TypeAlias = AllowedRSAKeys | AllowedECKeys | AllowedOKPKeys | AllowedPQKeys
         #: Type alias for allowed ``cryptography`` private keys (requires ``cryptography`` to be installed)
         AllowedPrivateKeys: TypeAlias = (
             RSAPrivateKey
             | EllipticCurvePrivateKey
             | Ed25519PrivateKey
             | Ed448PrivateKey
+            | Dilithium2PrivateKey
+            | Dilithium3PrivateKey
+            | Dilithium5PrivateKey
+            | Falcon512PrivateKey
+            | Falcon1024PrivateKey
+            | SphincsSPrivateKey
         )
         #: Type alias for allowed ``cryptography`` public keys (requires ``cryptography`` to be installed)
         AllowedPublicKeys: TypeAlias = (
             RSAPublicKey | EllipticCurvePublicKey | Ed25519PublicKey | Ed448PublicKey
+            | Dilithium2PublicKey | Dilithium3PublicKey | Dilithium5PublicKey
+            | Falcon512PublicKey | Falcon1024PublicKey 
+            | SphincsSPublicKey
         )
 
     has_crypto = True
@@ -137,6 +202,12 @@ requires_cryptography = {
     "PS384",
     "PS512",
     "EdDSA",
+    "DLT2",
+    "DLT3",
+    "DLT5",
+    "FCN512",
+    "FCN1024",
+    "SPNCS",
 }
 
 
@@ -168,6 +239,12 @@ def get_default_algorithms() -> dict[str, Algorithm]:
                 "PS384": RSAPSSAlgorithm(RSAPSSAlgorithm.SHA384),
                 "PS512": RSAPSSAlgorithm(RSAPSSAlgorithm.SHA512),
                 "EdDSA": OKPAlgorithm(),
+                "DLT2": PQCAlgorithm(Dilithium2),
+                "DLT3": PQCAlgorithm(Dilithium3),
+                "DLT5": PQCAlgorithm(Dilithium5),
+                "FCN512": PQCAlgorithm(Falcon512),
+                "FCN1024": PQCAlgorithm(Falcon1024),
+                "SPNCS": PQCAlgorithm(SphincsS),
             }
         )
 
@@ -944,3 +1021,129 @@ if has_crypto:
                 return Ed448PrivateKey.from_private_bytes(d)
             except ValueError as err:
                 raise InvalidKeyError("Invalid key parameter") from err
+
+    class PQCAlgorithm(Algorithm):
+        """
+        Generic adapter for liboqs signature algorithms.
+        Works with PrivateKey / PublicKey wrappers.
+        """
+
+        def __init__(self, scheme_name):
+            # self.scheme_name = scheme_name
+            self.verifier = Signature(scheme_name.method_name.decode())
+            self.scheme_name = scheme_name
+            self.sig = scheme_name
+            self.sk = None
+
+        def prepare_key(self, key):
+            """
+            Accepts:
+            - our custom PrivateKey wrapper
+            - our custom PublicKey wrapper
+            """
+            return key
+
+        def sign(
+            self, msg: str | bytes, key: Dilithium2PrivateKey
+        ) -> bytes:
+        # def sign(self, msg, key):
+            """
+            Sign message using a PrivateKey wrapper.
+            """
+            alg = self.sig.method_name.decode()
+            signer = Signature(alg, key)
+            self.sk = key
+            # if not hasattr(key, "sign"):
+            #     raise TypeError("Expected a PQC PrivateKey object")
+            # return self.sig.sign(msg)
+            return signer.sign(msg)
+
+        def verify(
+            self, msg: str | bytes, key: AllowedPQKeys, sig: str | bytes
+        ) -> bool:
+            try:
+                msg_bytes = msg.encode("utf-8") if isinstance(msg, str) else msg
+                sig_bytes = sig.encode("utf-8") if isinstance(sig, str) else sig
+
+                return self.sig.verify(msg,sig,key)  # If no exception was raised, the signature is valid.
+            except InvalidSignature:
+                return False
+
+        def generate_keypair(self):
+            """
+            Convenience: generate a fresh keypair for this algorithm.
+            Returns (priv, pub).
+            """
+            # pk, sk = self.sig.generate_keypair()
+            pk = self.sig.generate_keypair()
+            sk = self.sig.export_secret_key()
+            priv = PQCPrivateKey(self.sig, sk, pk)
+            pub = priv.public_key()
+            # return priv, pub
+            return sk, pk 
+
+        # --- Required abstract methods ---
+        def to_jwk(self, key):
+            """
+            Serialize PQC keys to a JWK-like JSON string.
+            """
+            if isinstance(key, PQCPrivateKey):
+                data = {
+                    "kty": "PQC",
+                    "alg": self.scheme_name,
+                    "sk": base64.urlsafe_b64encode(key._sk).decode("ascii"),
+                    "pk": base64.urlsafe_b64encode(key._pk).decode("ascii"),
+                }
+            elif isinstance(key, PQCPublicKey):
+                data = {
+                    "kty": "PQC",
+                    "alg": self.scheme_name,
+                    "pk": base64.urlsafe_b64encode(key._pk).decode("ascii"),
+                }
+            else:
+                raise TypeError("Unsupported key type for to_jwk()")
+            return json.dumps(data)
+
+        def from_jwk(self, jwk):
+            """
+            Deserialize from JWK-like JSON string back into PQC key.
+            """
+            data = json.loads(jwk)
+            print("FROM JWK DATA")
+            print(data)
+            if data.get("kty") != "PQC":
+                raise ValueError("Not a PQC JWK")
+
+            if "sk" in data:
+                sk = base64.urlsafe_b64decode(data["sk"])
+                pk = base64.urlsafe_b64decode(data["pk"])
+                return PQCPrivateKey(self.sig, sk, pk)
+            else:
+                pk = base64.urlsafe_b64decode(data["pk"])
+                return PQCPublicKey(self.sig, pk)
+
+
+    class PQCPrivateKey:
+        def __init__(self, sig: Signature, sk: bytes, pk: bytes):
+            self._sig = sig
+            self._sk = sk
+            self._pk = pk
+
+        def sign(self, data: bytes) -> bytes:
+            return self._sig.sign(data, self._sk)
+
+        def public_key(self):
+            return PQCPublicKey(self._sig, self._pk)
+
+
+    class PQCPublicKey:
+        def __init__(self, sig: Signature, pk: bytes):
+            self._sig = sig
+            self._pk = pk
+
+        def verify(self, signature: bytes, data: bytes) -> bool:
+            try:
+                return self._sig.verify(data, signature, self._pk)
+            except Exception:
+                return False
+

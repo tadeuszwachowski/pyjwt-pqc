@@ -109,6 +109,7 @@ class PyJWS:
             return self._algorithms[alg_name]
         except KeyError as e:
             if not has_crypto and alg_name in requires_cryptography:
+                print(has_crypto, requires_cryptography)
                 raise NotImplementedError(
                     f"Algorithm '{alg_name}' could not be found. Do you have cryptography installed?"
                 ) from e
